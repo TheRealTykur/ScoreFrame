@@ -12,4 +12,28 @@ favorite_teams: []
 poll_live_seconds: 15     # poll rate while any game is live
 poll_idle_seconds: 120    # poll rate otherwise
 page_seconds: 10          # how long each page shows when games overflow the screen
+# ESPN league paths: sport/league
+leagues:
+  - basketball/nba
+  - football/nfl
+  - hockey/nhl
+  - baseball/mlb
+
+# Optional: only show games involving these team abbreviations (e.g. PHI, NYY).
+# Leave empty to show every game.
+favorite_teams: []
+
+poll_live_seconds: 15     # poll rate while any game is live
+poll_idle_seconds: 120    # poll rate otherwise
+page_seconds: 10          # how long each page shows when games overflow the screen
 fullscreen: true          # false = 1280x720 resizable window for development
+
+# Games per page. 0 = auto (as many default-size cards as fit the screen).
+# Set either or both to force a grid; cards stretch and resize to fill the screen.
+#   columns: 2, rows: 2  -> 4 games per page
+#   columns: 1, rows: 1  -> one big game at a time
+columns: 0
+rows: 0
+
+show_logos: true          # download and show team logos (cached in logo_cache/)
+          # false = 1280x720 resizable window for development
