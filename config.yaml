@@ -9,6 +9,10 @@ leagues:
 # Leave empty to show every game.
 favorite_teams: []
 
+# Only show games that start today (your Pi's local time), plus any game still live.
+# Set false to show everything ESPN returns (e.g. the whole NFL week).
+today_only: true
+
 poll_live_seconds: 15     # poll rate while any game is live
 poll_idle_seconds: 120    # poll rate otherwise
 page_seconds: 10          # how long each page shows when games overflow the screen
