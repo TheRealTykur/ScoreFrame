@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Sports scoreboard for Raspberry Pi (pygame).
+"""ScoreFrame - live sports scoreboard for Raspberry Pi that adapts to any screen size.
 
 Detects the attached screen's resolution, scales every UI element against a
 1920x1080 reference design, and pages through games if they don't all fit.
-Scores come from ESPN's unofficial scoreboard endpoints.
+Scores and team logos come from ESPN's unofficial scoreboard endpoints.
 """
+
+import hashlib
 import os
 import sys
 import threading
@@ -16,10 +18,12 @@ import yaml
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.yaml")
+LOGO_DIR = os.path.join(HERE, "logo_cache")
 
 REF_W, REF_H = 1920, 1080          # design reference resolution
-CARD_W, CARD_H = 600, 210           # card size in reference pixels
+CARD_W, CARD_H = 600, 210           # default card size in reference pixels
 GAP, MARGIN = 30, 40
+FOOTER_H = 60
 ESPN_URL = "https://site.api.espn.com/apis/site/v2/sports/{league}/scoreboard"
 
 BG = (14, 17, 23)
@@ -100,6 +104,7 @@ def parse_event(ev, league_tag):
                 "abbr": c["team"].get("abbreviation", "?"),
                 "name": c["team"].get("shortDisplayName", c["team"].get("name", "?")),
                 "score": c.get("score", "0"),
+                "logo": c["team"].get("logo", ""),
             }
 
         return {
@@ -115,6 +120,56 @@ def parse_event(ev, league_tag):
 
 
 # --------------------------------------------------------------------------
+# Logo cache: downloads once, stores on disk, scales on demand.
+# Downloads happen in background threads; the main thread does all pygame work.
+# --------------------------------------------------------------------------
+class LogoCache:
+    def __init__(self, folder):
+        self.folder = folder
+        os.makedirs(folder, exist_ok=True)
+        self.started = set()     # urls we've begun fetching (never retried until restart)
+        self.on_disk = {}        # url -> file path, set by download threads
+        self.surfaces = {}       # url -> original pygame Surface
+        self.scaled = {}         # (url, size) -> scaled Surface
+
+    def get(self, url, size):
+        if not url:
+            return None
+        if url not in self.surfaces:
+            if url in self.on_disk:
+                try:
+                    self.surfaces[url] = pygame.image.load(self.on_disk[url]).convert_alpha()
+                except pygame.error:
+                    self.on_disk.pop(url, None)
+                    return None
+            else:
+                if url not in self.started:
+                    self.started.add(url)
+                    threading.Thread(target=self._download, args=(url,), daemon=True).start()
+                return None
+        key = (url, size)
+        if key not in self.scaled:
+            src = self.surfaces[url]
+            sw, sh = src.get_size()
+            f = size / max(sw, sh)
+            self.scaled[key] = pygame.transform.smoothscale(
+                src, (max(1, int(sw * f)), max(1, int(sh * f))))
+        return self.scaled[key]
+
+    def _download(self, url):
+        path = os.path.join(self.folder, hashlib.md5(url.encode()).hexdigest() + ".png")
+        try:
+            if not os.path.exists(path):
+                r = requests.get(url, timeout=10)
+                r.raise_for_status()
+                with open(path, "wb") as f:
+                    f.write(r.content)
+            self.on_disk[url] = path
+        except Exception:
+            pass  # card just shows no logo
+
+
+# --------------------------------------------------------------------------
 # Display layer
 # --------------------------------------------------------------------------
 class Display:
@@ -127,24 +182,27 @@ class Display:
             self.screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
         else:
             self.screen = pygame.display.set_mode((1280, 720), pygame.RESIZABLE)
+        self.show_logos = cfg.get("show_logos", True)
+        self.logos = LogoCache(LOGO_DIR)
         self.fonts = {}
         self.update_scale()
 
     def update_scale(self):
         w, h = self.screen.get_size()
         self.w, self.h = w, h
-        self.scale = min(w / REF_W, h / REF_H)
+        self.base_scale = min(w / REF_W, h / REF_H)
+        self.scale = self.base_scale
         self.fonts.clear()
 
     def px(self, v):
         return max(1, int(v * self.scale))
 
     def font(self, ref_size, bold=False):
-        key = (ref_size, bold)
+        size = self.px(ref_size)
+        key = (size, bold)
         if key not in self.fonts:
             self.fonts[key] = pygame.font.SysFont(
-                "dejavusans,liberationsans,arial", self.px(ref_size), bold=bold
-            )
+                "dejavusans,liberationsans,arial", size, bold=bold)
         return self.fonts[key]
 
     def text(self, s, ref_size, color, pos, bold=False, anchor="topleft"):
@@ -154,15 +212,32 @@ class Display:
         return rect
 
     def grid(self):
-        """How many cards fit across/down at the current scale."""
+        """Work out columns, rows and card size.
+
+        columns / rows in config.yaml (0 = auto) force the grid; cards then
+        stretch to fill the screen. In auto mode, as many default-size cards
+        as fit are shown.
+        """
         m, gap = self.px(MARGIN), self.px(GAP)
-        cw = min(self.px(CARD_W), self.w - 2 * m)
-        ch = min(self.px(CARD_H), self.h - 2 * m)
-        cols = max(1, (self.w - 2 * m + gap) // (cw + gap))
-        rows = max(1, (self.h - 2 * m - self.px(60) + gap) // (ch + gap))
+        avail_w = self.w - 2 * m
+        avail_h = self.h - 2 * m - self.px(FOOTER_H)
+
+        cols_cfg = int(self.cfg.get("columns") or 0)
+        rows_cfg = int(self.cfg.get("rows") or 0)
+
+        cw = min(self.px(CARD_W), avail_w)
+        ch = min(self.px(CARD_H), avail_h)
+        cols = cols_cfg or max(1, (avail_w + gap) // (cw + gap))
+        rows = rows_cfg or max(1, (avail_h + gap) // (ch + gap))
+
+        if cols_cfg:
+            cw = (avail_w - (cols - 1) * gap) // cols
+        if rows_cfg:
+            ch = (avail_h - (rows - 1) * gap) // rows
         return cols, rows, cw, ch, m, gap
 
     def draw(self, games, page, last_ok, error):
+        self.scale = self.base_scale
         self.screen.fill(BG)
         cols, rows, cw, ch, m, gap = self.grid()
         per_page = cols * rows
@@ -174,23 +249,32 @@ class Display:
             msg = "Waiting for scores..." if not error else "Can't reach score feed"
             self.text(msg, 60, DIM, (self.w // 2, self.h // 2), anchor="center")
 
-        # center the grid horizontally
+        # center the grid
         used_w = cols * cw + (cols - 1) * gap
+        used_h = rows * ch + (rows - 1) * gap
         x0 = (self.w - used_w) // 2
+        y0 = m + max(0, (self.h - 2 * m - self.px(FOOTER_H) - used_h) // 2)
         for i, g in enumerate(visible):
             r, c = divmod(i, cols)
-            x = x0 + c * (cw + gap)
-            y = m + r * (ch + gap)
-            self.draw_card(g, x, y, cw, ch)
+            self.draw_card(g, x0 + c * (cw + gap), y0 + r * (ch + gap), cw, ch)
 
+        self.scale = self.base_scale
         self.draw_footer(page, pages, last_ok, error)
         pygame.display.flip()
         return pages
 
     def draw_card(self, g, x, y, w, h):
         live = g["state"] == "in"
+        radius = self.px(18)
         pygame.draw.rect(self.screen, CARD_LIVE if live else CARD,
-                         (x, y, w, h), border_radius=self.px(18))
+                         (x, y, w, h), border_radius=radius)
+
+        # Scale the card's contents so they fit the card (shrinks in tight
+        # grids, grows when you force fewer, bigger cards).
+        k = min(w / self.px(CARD_W), h / self.px(CARD_H))
+        self.scale = self.base_scale * k
+        y += max(0, (h - self.px(CARD_H)) // 2)   # center content vertically
+
         pad = self.px(26)
 
         # status line
@@ -204,10 +288,17 @@ class Display:
         self.text(g["league"], 24, DIM, (x + w - pad, y + pad), anchor="topright")
 
         # team rows
+        logo_size = self.px(54)
+        text_x = x + pad + (logo_size + self.px(18) if self.show_logos else 0)
         row_y = y + pad + self.px(60)
         for side in ("away", "home"):
             t = g[side]
-            self.text(t["name"], 44, TEXT, (x + pad, row_y), bold=True)
+            if self.show_logos:
+                img = self.logos.get(t["logo"], logo_size)
+                if img:
+                    self.screen.blit(img, img.get_rect(
+                        center=(x + pad + logo_size // 2, row_y + self.px(26))))
+            self.text(t["name"], 44, TEXT, (text_x, row_y), bold=True)
             if g["state"] != "pre":
                 self.text(t["score"], 52, TEXT, (x + w - pad, row_y - self.px(4)),
                           bold=True, anchor="topright")
