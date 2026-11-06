@@ -11,7 +11,7 @@ favorite_teams: []
 
 # Only show games that start today (your Pi's local time), plus any game still live.
 # Set false to show everything ESPN returns (e.g. the whole NFL week).
-today_only: false
+today_only: true
 
 poll_live_seconds: 15     # poll rate while any game is live
 poll_idle_seconds: 120    # poll rate otherwise
