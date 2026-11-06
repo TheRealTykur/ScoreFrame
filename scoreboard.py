@@ -5,12 +5,12 @@ Detects the attached screen's resolution, scales every UI element against a
 1920x1080 reference design, and pages through games if they don't all fit.
 Scores and team logos come from ESPN's unofficial scoreboard endpoints.
 """
-
 import hashlib
 import os
 import sys
 import threading
 import time
+from datetime import datetime, timedelta
 
 import pygame
 import requests
@@ -75,9 +75,19 @@ class ScoreFeed(threading.Thread):
 
     def fetch_all(self):
         favs = {t.upper() for t in self.cfg.get("favorite_teams") or []}
+        today_only = self.cfg.get("today_only", True)
+        params = {"limit": 300}
+        if today_only:
+            # Ask for yesterday..tomorrow so ESPN's own day boundary (US Eastern)
+            # can't hide a game that's still live in your timezone. We then
+            # filter by your local date below.
+            now = datetime.now()
+            d0 = (now - timedelta(days=1)).strftime("%Y%m%d")
+            d1 = (now + timedelta(days=1)).strftime("%Y%m%d")
+            params["dates"] = f"{d0}-{d1}"
         out = []
         for league in self.cfg["leagues"]:
-            r = requests.get(ESPN_URL.format(league=league), timeout=10)
+            r = requests.get(ESPN_URL.format(league=league), params=params, timeout=10)
             r.raise_for_status()
             tag = league.split("/")[-1].upper()
             for ev in r.json().get("events", []):
@@ -86,11 +96,24 @@ class ScoreFeed(threading.Thread):
                     continue
                 if favs and not ({g["away"]["abbr"], g["home"]["abbr"]} & favs):
                     continue
+                if today_only and not is_today_or_live(g):
+                    continue
                 out.append(g)
         # live first, then upcoming, then final
         order = {"in": 0, "pre": 1, "post": 2}
         out.sort(key=lambda g: (order.get(g["state"], 3), g["start"]))
         return out
+
+
+def is_today_or_live(g):
+    """True if the game starts today (system local time) or is live right now."""
+    if g["state"] == "in":
+        return True      # a game that started last night but is still going
+    try:
+        start = datetime.fromisoformat(g["start"].replace("Z", "+00:00"))
+        return start.astimezone().date() == datetime.now().date()
+    except ValueError:
+        return True      # can't parse the date: better to show it than hide it
 
 
 def parse_event(ev, league_tag):
