@@ -1,3 +1,5 @@
+# ScoreFrame configuration
+
 # ESPN league paths: sport/league
 leagues:
   - basketball/nba
@@ -22,8 +24,10 @@ fullscreen: true          # false = 1280x720 resizable window for development
 # Set either or both to force a grid; cards stretch and resize to fill the screen.
 #   columns: 2, rows: 2  -> 4 games per page
 #   columns: 1, rows: 1  -> one big game at a time
-columns: 1
-rows: 1
+
+columns: 2
+rows: 2
 
 show_logos: true          # download and show team logos (cached in logo_cache/)
-          # false = 1280x720 resizable window for development
+
+debug: true               # print games-per-league counts to the terminal (set false once working)
