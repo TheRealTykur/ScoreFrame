@@ -5,6 +5,7 @@ Detects the attached screen's resolution, scales every UI element against a
 1920x1080 reference design, and pages through games if they don't all fit.
 Scores and team logos come from ESPN's unofficial scoreboard endpoints.
 """
+
 import hashlib
 import os
 import sys
@@ -76,29 +77,59 @@ class ScoreFeed(threading.Thread):
     def fetch_all(self):
         favs = {t.upper() for t in self.cfg.get("favorite_teams") or []}
         today_only = self.cfg.get("today_only", True)
-        params = {"limit": 300}
+        debug = self.cfg.get("debug", False)
+
+        # ESPN's scoreboard is happiest with one date per request (YYYYMMDD).
+        # For today_only we ask for yesterday/today/tomorrow so ESPN's own day
+        # boundary (US Eastern) can't hide a game that's live in your timezone,
+        # then filter by your local date below.
         if today_only:
-            # Ask for yesterday..tomorrow so ESPN's own day boundary (US Eastern)
-            # can't hide a game that's still live in your timezone. We then
-            # filter by your local date below.
             now = datetime.now()
-            d0 = (now - timedelta(days=1)).strftime("%Y%m%d")
-            d1 = (now + timedelta(days=1)).strftime("%Y%m%d")
-            params["dates"] = f"{d0}-{d1}"
-        out = []
+            dates = [(now + timedelta(days=d)).strftime("%Y%m%d") for d in (-1, 0, 1)]
+        else:
+            dates = [None]   # ESPN's default "current" scoreboard
+
+        out, seen = [], set()
+        requests_ok = 0
+        last_err = None
         for league in self.cfg["leagues"]:
-            r = requests.get(ESPN_URL.format(league=league), params=params, timeout=10)
-            r.raise_for_status()
             tag = league.split("/")[-1].upper()
-            for ev in r.json().get("events", []):
-                g = parse_event(ev, tag)
-                if not g:
+            fetched = kept = 0
+            for d in dates:
+                params = {"limit": 300}
+                if d:
+                    params["dates"] = d
+                try:
+                    r = requests.get(ESPN_URL.format(league=league),
+                                     params=params, timeout=10)
+                    r.raise_for_status()
+                    events = r.json().get("events", [])
+                    requests_ok += 1
+                except Exception as e:
+                    last_err = e
                     continue
-                if favs and not ({g["away"]["abbr"], g["home"]["abbr"]} & favs):
-                    continue
-                if today_only and not is_today_or_live(g):
-                    continue
-                out.append(g)
+                for ev in events:
+                    fetched += 1
+                    g = parse_event(ev, tag)
+                    if not g:
+                        continue
+                    key = (tag, g["id"])
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    if favs and not ({g["away"]["abbr"], g["home"]["abbr"]} & favs):
+                        continue
+                    if today_only and not is_today_or_live(g):
+                        continue
+                    out.append(g)
+                    kept += 1
+            if debug:
+                print(f"[ScoreFrame] {tag}: {fetched} events from ESPN, {kept} shown",
+                      flush=True)
+
+        if requests_ok == 0 and last_err:
+            raise last_err    # every request failed -> show the offline notice
+
         # live first, then upcoming, then final
         order = {"in": 0, "pre": 1, "post": 2}
         out.sort(key=lambda g: (order.get(g["state"], 3), g["start"]))
@@ -131,6 +162,7 @@ def parse_event(ev, league_tag):
             }
 
         return {
+            "id": ev.get("id", ev.get("uid", "")),
             "league": league_tag,
             "away": side(teams["away"]),
             "home": side(teams["home"]),
