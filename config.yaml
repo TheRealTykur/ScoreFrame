@@ -28,6 +28,6 @@ fullscreen: true          # false = 1280x720 resizable window for development
 columns: 2
 rows: 2
 
-show_logos: true          # download and show team logos (cached in logo_cache/)
+show_logos: false          # download and show team logos (cached in logo_cache/)
 
-debug: true               # print games-per-league counts to the terminal (set false once working)
+debug: false               # print games-per-league counts to the terminal (set false once working)
